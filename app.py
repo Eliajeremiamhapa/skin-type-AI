@@ -1,49 +1,51 @@
-from flask import Flask, render_template, request
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing import image
 import numpy as np
 import os
 
 app = Flask(__name__)
+CORS(app) # Allows your mobile app to access the API
 
-# Render uses a Linux environment, so we use relative paths
-UPLOAD_FOLDER = "static/uploads"
+UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# 1. FIX: Changed from D:\FLASK\... to a relative path
-# Ensure 'skin_model.keras' is in your main project folder when you upload to GitHub
+# Path to model - Ensure skin_model.keras is in the root folder of your GitHub
 model_path = os.path.join(os.getcwd(), "skin_model.keras")
-model = load_model(model_path)
+
+# Check if model exists before loading to prevent crash
+if os.path.exists(model_path):
+    model = load_model(model_path)
+else:
+    model = None
+    print(f"ERROR: Model file not found at {model_path}")
 
 class_names = ["dry", "normal", "oily"]
 
 SKIN_INFO = {
     "dry": {
-        "desc": "Your skin is dry, may feel tight, rough or flaky.",
+        "description": "Your skin is dry, may feel tight, rough or flaky.",
         "advice": "Use hydrating moisturizer and avoid harsh soaps.",
         "natural_oils": [
-            "🥥 Coconut Oil (Mafuta ya nazi) - moisturizes deeply",
-            "🌿 Aloe Vera Gel - soothes and hydrates skin",
-            "🥑 Avocado Oil - rich in vitamins for dry skin",
-            "🐝 Shea Butter (Mafuta ya shea) - locks moisture"
+            "Coconut Oil (Mafuta ya nazi)",
+            "Aloe Vera Gel",
+            "Avocado Oil",
+            "Shea Butter (Mafuta ya shea)"
         ],
-        "industrial_products": ["Nivea Soft Cream", "Vaseline Intensive Care", "Garnier Hydrating Cream"]
+        "products": ["Nivea Soft Cream", "Vaseline Intensive Care"]
     },
     "normal": {
-        "desc": "Your skin is balanced, not too oily or dry.",
+        "description": "Your skin is balanced, not too oily or dry.",
         "advice": "Maintain routine and use light moisturizer.",
-        "natural_oils": ["🥥 Coconut Oil (light use)", "🌿 Aloe Vera Gel", "🌰 Almond Oil"],
-        "industrial_products": ["Nivea Light Moisturizer", "Simple Hydrating Gel", "Neutrogena Hydro Boost"]
+        "natural_oils": ["Coconut Oil (light use)", "Aloe Vera Gel", "Almond Oil"],
+        "products": ["Nivea Light Moisturizer", "Simple Hydrating Gel"]
     },
     "oily": {
-        "desc": "Your skin produces excess oil and looks shiny.",
+        "description": "Your skin produces excess oil and looks shiny.",
         "advice": "Use oil-free products and gel-based cleansers.",
-        "natural_oils": [
-            "🌿 Aloe Vera Gel (best for oily skin)",
-            "🍋 Lemon + Honey mask (control oil)",
-            "🌱 Tea Tree Oil (anti-bacterial)"
-        ],
-        "industrial_products": ["Clean & Clear Foaming Face Wash", "Neutrogena Oil-Free Moisturizer", "Garnier Pure Active"]
+        "natural_oils": ["Aloe Vera Gel", "Lemon + Honey mask", "Tea Tree Oil"],
+        "products": ["Clean & Clear", "Neutrogena Oil-Free"]
     }
 }
 
@@ -53,38 +55,40 @@ def prepare_image(img_path):
     img_array = np.expand_dims(img_array, axis=0)
     return img_array
 
-@app.route("/", methods=["GET", "POST"])
-def index():
-    prediction = None
-    confidence = None
-    info = None
-    img_path = None
+@app.route("/predict", methods=["POST"])
+def predict():
+    if model is None:
+        return jsonify({"error": "Model not loaded on server"}), 500
 
-    if request.method == "POST":
-        file = request.files.get("file")
-        if file and file.filename != '':
-            filepath = os.path.join(UPLOAD_FOLDER, file.filename)
-            file.save(filepath)
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
 
-            img = prepare_image(filepath)
-            preds = model.predict(img)
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"error": "Empty filename"}), 400
 
-            idx = np.argmax(preds[0])
-            prediction = class_names[idx]
-            confidence = round(float(np.max(preds[0])) * 100, 2)
+    # Save and Process
+    filepath = os.path.join(UPLOAD_FOLDER, file.filename)
+    file.save(filepath)
+    
+    try:
+        img = prepare_image(filepath)
+        preds = model.predict(img)
+        os.remove(filepath) # Clean up after prediction
 
-            info = SKIN_INFO[prediction]
-            img_path = filepath
+        idx = np.argmax(preds[0])
+        prediction = class_names[idx]
+        confidence = round(float(np.max(preds[0])) * 100, 2)
 
-    return render_template(
-        "index.html",
-        prediction=prediction,
-        confidence=confidence,
-        info=info,
-        img_path=img_path
-    )
+        return jsonify({
+            "status": "success",
+            "prediction": prediction,
+            "confidence": f"{confidence}%",
+            "info": SKIN_INFO[prediction]
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-# 2. FIX: Render dynamic port binding
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host="0.0.0.0", port=port)
